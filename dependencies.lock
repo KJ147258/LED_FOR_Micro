@@ -1,0 +1,18 @@
+dependencies:
+  idf:
+    source:
+      type: idf
+    version: 5.3.4
+  jbrilha/esp_lcd_st7789:
+    component_hash: 95b5a7ed16de15546d37d5ab4abce3b1d8b9ed418ec8b6d06ac8890f082e4188
+    dependencies: []
+    source:
+      registry_url: https://components.espressif.com/
+      type: service
+    version: 1.0.2
+direct_dependencies:
+- idf
+- jbrilha/esp_lcd_st7789
+manifest_hash: ea1024278b053ff0c94e7b77b28ef329c65f38abc22e6c7121695f509f5b9e57
+target: esp32
+version: 2.0.0

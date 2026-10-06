@@ -235,34 +235,39 @@ static float median_filter(float new_val)
 /* ===================== ST7789 显示布局 =====================
  *
  * 上下对比布局，直接展示“信号处理运算前 -> 运算后”的变化：
- *   0              顶部方向条：时域互相关(DIR-T) 与 频域相位差(DIR-F) 对照
- *   TIME_LABEL_TOP 时域标签行 (TIME L  RMS=...)
- *   TIME_WAVE_TOP   上半屏：左声道时域波形（运算前，红色）
+ *   0              顶部方向指示区：方向指针条 + 时域(DIR-T)/频域(DIR-F)对照文字
+ *   TIME_LABEL_TOP 波形标签行（左半屏 L / 右半屏 R 各自显示 RMS）
+ *   TIME_WAVE_TOP   波形区：左右声道时域波形左右并排（左红 / 右蓝）
  *   TIME_BOT
  *   SPEC_LABEL_TOP 频域标签行 (FFT mag  peak=...Hz)
- *   SPEC_WAVE_TOP   下半屏：FFT 幅度谱（运算后，青色柱状图）
+ *   SPEC_WAVE_TOP   下半屏：FFT 幅度谱（运算后，青色柱状图，占全屏宽）
  *   SPEC_BOT = 320
  *
- * 这两个区域由同一个麦克风信号产生：上面是它的时间波形，下面是它的频谱，
- * 一眼就能看出“时域杂乱无章的波纹，在频域变成了清晰的主频尖峰”。
+ * 波形区由同一段麦克风信号产生：左右两路是时间波形，下面是左声道频谱，
+ * 一眼就能看出“时域杂乱无章的波纹，在频域变成了清晰的主频尖峰”，
+ * 并排的两路波形则直观展示两麦之间的到达时间差。
  * 区域坐标全部由宏推导、无缝衔接，无重叠也不留空隙。
  */
-#define HUD_H        22                             /* 顶部方向条高度 */
+#define HUD_H        38                             /* 顶部方向指示区高度 */
 #define LABEL_H      12                             /* 每区标签行高度 */
-#define WAVE_H       137                            /* 时域/频域区高度(上下同高) */
+#define WAVE_H       129                            /* 波形/频谱区高度(同高) */
 
-#define TIME_LABEL_TOP  HUD_H                        /* 22 时域标签上边界 */
-#define TIME_WAVE_TOP   (TIME_LABEL_TOP + LABEL_H)   /* 34 时域波形上边界 */
-#define TIME_BOT        (TIME_WAVE_TOP + WAVE_H)     /* 171 时域波形下边界 */
-#define SPEC_LABEL_TOP  TIME_BOT                     /* 171 频谱标签上边界 */
-#define SPEC_WAVE_TOP   (SPEC_LABEL_TOP + LABEL_H)   /* 183 频谱柱状图上边界 */
+#define TIME_LABEL_TOP  HUD_H                        /* 38 波形标签上边界 */
+#define TIME_WAVE_TOP   (TIME_LABEL_TOP + LABEL_H)   /* 50 波形区上边界 */
+#define TIME_BOT        (TIME_WAVE_TOP + WAVE_H)     /* 179 波形区下边界 */
+#define SPEC_LABEL_TOP  TIME_BOT                     /* 179 频谱标签上边界 */
+#define SPEC_WAVE_TOP   (SPEC_LABEL_TOP + LABEL_H)   /* 191 频谱柱状图上边界 */
 #define SPEC_BOT        (SPEC_WAVE_TOP + WAVE_H)     /* 320 = ST7789_V_RES */
+
+/* 波形区左右并排：左声道占左半屏、右声道占右半屏，同一水平线对齐同一时刻，
+ * 便于直观对比两路信号的到达时间差。 */
+#define WAVE_PANEL_W    120                           /* 每路波形面板宽度 */
 
 /* 滚动波形：scroll[0]=最新(画在最左)，scroll[SCROLL_W-1]=最旧(画在最右)。
  * 每帧把旧数据整体右移 SCROLL_COLS_PER_FRAME 列、新数据从左进入，形成
  * “随时间向右移动、从右侧移出屏幕”的连续滚动。列数越小滚得越慢。 */
-#define SCROLL_W              ST7789_H_RES            /* 滚动缓冲列数 = 屏宽 */
-#define SCROLL_COLS_PER_FRAME 16                      /* 每帧推入的新列数 */
+#define SCROLL_W              WAVE_PANEL_W            /* 滚动缓冲列数 = 每路面板宽 */
+#define SCROLL_COLS_PER_FRAME 8                       /* 每帧推入的新列数 */
 
 /* 悬空检测：拆掉一个麦克风后，它的 DOUT 悬空，对应声道会读到接近满幅的
  * 白噪声(RMS 很高)。用 RMS 阈值 + 连续帧数判定该路离线，避免满屏噪声污染
@@ -273,6 +278,7 @@ static float median_filter(float new_val)
 /* 一路声道的完整显示状态：坐标、颜色、标签、滚动数据、幅度刻度全部独立，
  * 左右两路各有一个实例，绘制时互不共享任何可变状态。 */
 typedef struct {
+    int         x0;         /* 波形区起始列（左路 0 / 右路 WAVE_PANEL_W） */
     int         y_top;      /* 波形区上边界 */
     int         y_bot;      /* 波形区下边界 */
     int         label_y;    /* 标签行上边界 */
@@ -359,7 +365,7 @@ static void update_online_state(wave_view_t *v, float rms_ch)
 }
 
 /* 把一路声道波形画到它的波形区 [y_top, y_bot)：每列一个点、相邻列连成
- * 折线，改写为逐条带 draw_bitmap，覆盖整屏宽度。每次进入都先整块清零再画，
+ * 折线，改写为逐条带 draw_bitmap，覆盖本路面板宽度。每次进入都先整块清零再画，
  * 配合独立清零的工作缓冲 s_fb，两路先后绘制互不影响。 */
 static int wave_y(const wave_view_t *v, int y_mid, int half, int peak, int32_t val)
 {
@@ -402,13 +408,42 @@ static void draw_wave(const wave_view_t *v)
             py = y;
         }
 
-        st7789_draw_bitmap(x0, v->y_top, x0 + cols, v->y_bot, s_fb);
+        st7789_draw_bitmap(v->x0 + x0, v->y_top, v->x0 + x0 + cols, v->y_bot, s_fb);
     }
 }
 
-/* 顶部方向条：把“时域定位(DIR-T)”和“频域定位(DIR-F)”放在同一行对照，
- * 直观展示傅里叶变换的“作用”：同一段麦克风信号，既能在时域用互相关求方向，
- * 也能在频域用相位差求方向，两者结果应当一致。 */
+/* 把角度(度，范围 ±90)线性映射到指针条的水平像素坐标 */
+static int angle_to_x(float angle)
+{
+    int x = ST7789_H_RES / 2 + (int)(angle * (ST7789_H_RES / 2.0f / 90.0f));
+    if (x < 3) x = 3;
+    if (x > ST7789_H_RES - 3) x = ST7789_H_RES - 3;
+    return x;
+}
+
+/* 画一个顶点朝下(在 y_bot)、底边在上(y_top)的实心等腰三角形指示箭头 */
+static void hud_triangle(int cx, int y_top, int y_bot, uint16_t color)
+{
+    int h = y_bot - y_top;
+    for (int y = y_top; y <= y_bot; y++) {
+        int halfw = h - (y - y_top);   /* 顶部最宽 h，底部收窄到 0 */
+        st7789_fill_rect(cx - halfw, y, cx + halfw + 1, y + 1, color);
+    }
+}
+
+/* 空心三角（只描边），与时域实心三角叠加时仍能分辨 */
+static void hud_triangle_outline(int cx, int y_top, int y_bot, uint16_t color)
+{
+    int h = y_bot - y_top;
+    if (cx - h < 0) cx = h;                       /* 防御：保证描边不出屏 */
+    if (cx + h >= ST7789_H_RES) cx = ST7789_H_RES - 1 - h;
+    st7789_draw_line(cx - h, y_top, cx + h, y_top, color);
+    st7789_draw_line(cx - h, y_top, cx, y_bot, color);
+    st7789_draw_line(cx + h, y_top, cx, y_bot, color);
+}
+
+/* 顶部方向指示区：上半是指针条(-90°..0°..+90°)，实心红三角=时域定位角、
+ * 空心青三角=频域定位角，两者重叠即两种算法结果一致；下半是文字对照。 */
 static void draw_hud(bool have_t, float t_angle, double t_rho,
                      bool have_f, float f_angle, float f_quality, float peak_hz)
 {
@@ -416,34 +451,56 @@ static void draw_hud(bool have_t, float t_angle, double t_rho,
 
     st7789_fill_rect(0, 0, ST7789_H_RES, HUD_H, ST7789_COLOR_BLACK);
 
+    /* ---- 指针条：水平量程 -90°(左) .. 0°(正前) .. +90°(右) ---- */
+    st7789_draw_line(0, 19, ST7789_H_RES - 1, 19, ST7789_RGB(80, 80, 80));
+    st7789_draw_line(ST7789_H_RES / 2, 15, ST7789_H_RES / 2, 19, ST7789_COLOR_WHITE);
+    st7789_draw_line(0, 17, 0, 19, ST7789_RGB(80, 80, 80));
+    st7789_draw_line(ST7789_H_RES - 1, 17, ST7789_H_RES - 1, 19, ST7789_RGB(80, 80, 80));
+    st7789_draw_line(60, 17, 60, 19, ST7789_RGB(80, 80, 80));
+    st7789_draw_line(180, 17, 180, 19, ST7789_RGB(80, 80, 80));
+
+    st7789_draw_text(2, 1, "L", ST7789_COLOR_RED, 1);
+    st7789_draw_text(ST7789_H_RES / 2 - 5, 1, "0", ST7789_COLOR_WHITE, 1);
+    st7789_draw_text(ST7789_H_RES - 8, 1, "R", ST7789_COLOR_CYAN, 1);
+
+    if (have_t) {
+        hud_triangle(angle_to_x(t_angle), 9, 19, ST7789_COLOR_RED);
+    }
+    if (have_f) {
+        hud_triangle_outline(angle_to_x(f_angle), 10, 18, ST7789_COLOR_CYAN);
+    }
+    if (!have_t && !have_f) {
+        hud_triangle(ST7789_H_RES / 2, 14, 19, ST7789_RGB(90, 90, 90));
+    }
+
+    /* ---- 文字对照 ---- */
     if (have_t || have_f) {
-        /* 行1：主频 + 两种方法的方位角 */
         snprintf(line, sizeof(line), "pk %5.0fHz T%+4.0f F%+4.0f",
                  peak_hz, have_t ? t_angle : 0.0f, have_f ? f_angle : 0.0f);
-        st7789_draw_text(2, 2, line, ST7789_COLOR_GREEN, 1);
-        /* 行2：时域相关系数 与 频域可信度 */
+        st7789_draw_text(2, 23, line, ST7789_COLOR_GREEN, 1);
         snprintf(line, sizeof(line), "xcorr r=%.2f | phase q=%.2f",
                  have_t ? t_rho : 0.0, have_f ? f_quality : 0.0f);
-        st7789_draw_text(2, 12, line, ST7789_COLOR_GREEN, 1);
+        st7789_draw_text(2, 31, line, ST7789_COLOR_GREEN, 1);
     } else {
-        st7789_draw_text(2, 2, "silent / noise ...", ST7789_COLOR_YELLOW, 1);
-        st7789_draw_text(2, 12, "time vs freq domain", ST7789_COLOR_YELLOW, 1);
+        st7789_draw_text(2, 23, "silent / noise ...", ST7789_COLOR_YELLOW, 1);
+        st7789_draw_text(2, 31, "time vs freq domain", ST7789_COLOR_YELLOW, 1);
     }
 }
 
-/* 时域标签行（左声道 RMS），只清它自己的那 LABEL_H 像素行 */
+/* 波形标签行（各声道在各自半屏显示 RMS），只清它自己的那 LABEL_H 像素行 */
 static void draw_label(const wave_view_t *v)
 {
-    char line[32];
+    char line[24];
 
-    st7789_fill_rect(0, v->label_y, ST7789_H_RES, v->label_y + LABEL_H, ST7789_COLOR_BLACK);
+    st7789_fill_rect(v->x0, v->label_y, v->x0 + SCROLL_W, v->label_y + LABEL_H,
+                     ST7789_COLOR_BLACK);
 
     if (v->offline) {
-        snprintf(line, sizeof(line), "TIME %s OFFLINE", v->name);
-        st7789_draw_text(2, v->label_y + 2, line, ST7789_COLOR_YELLOW, 1);
+        snprintf(line, sizeof(line), "%s OFFLINE", v->name);
+        st7789_draw_text(v->x0 + 2, v->label_y + 2, line, ST7789_COLOR_YELLOW, 1);
     } else {
-        snprintf(line, sizeof(line), "TIME %s RMS=%5.0f", v->name, v->rms);
-        st7789_draw_text(2, v->label_y + 2, line, v->color, 1);
+        snprintf(line, sizeof(line), "%s RMS=%5.0f", v->name, v->rms);
+        st7789_draw_text(v->x0 + 2, v->label_y + 2, line, v->color, 1);
     }
 }
 
@@ -463,8 +520,8 @@ static void draw_spec_label(void)
  * 主频所在列高亮为黄色，其余为青色。 */
 static void draw_spectrum(const float *mag)
 {
-    const int width  = SCROLL_W;
-    const int height = SPEC_BOT - SPEC_WAVE_TOP;   /* 137 */
+    const int width  = ST7789_H_RES;               /* 频谱占全屏宽(左右声道共用) */
+    const int height = SPEC_BOT - SPEC_WAVE_TOP;   /* 129 */
     const int base   = height - 1;
     const int nbins  = FFT_N / 2;                  /* 正频率 bin 数(不含 Nyquist) */
 
@@ -517,8 +574,9 @@ static void draw_spectrum(const float *mag)
     }
 }
 
-/* 左声道：时域波形视图（上半屏，红色）—— “运算前”的输入信号 */
+/* 左声道：时域波形视图（波形区左半屏，红色）—— “运算前”的输入信号 */
 static wave_view_t s_view_l = {
+    .x0      = 0,
     .y_top   = TIME_WAVE_TOP,
     .y_bot   = TIME_BOT,
     .label_y = TIME_LABEL_TOP,
@@ -527,10 +585,10 @@ static wave_view_t s_view_l = {
     .peak    = 600,
 };
 
-/* 右声道：不再单独显示波形，但其 RMS/离线状态仍用于频域定位与噪声判断。
- * 保留这个结构体只为复用 update_online_state 的离线检测逻辑；
- * y_top/y_bot/label_y 不再参与绘制。 */
+/* 右声道：时域波形视图（波形区右半屏，蓝色），与左声道水平对齐、便于对比时延。
+ * 其 RMS/离线状态同时用于频域定位与噪声判断。 */
 static wave_view_t s_view_r = {
+    .x0      = WAVE_PANEL_W,
     .y_top   = TIME_WAVE_TOP,
     .y_bot   = TIME_BOT,
     .label_y = TIME_LABEL_TOP,
@@ -780,24 +838,32 @@ void app_main(void)
         if (lcd_ret == ESP_OK) {
             TickType_t now_tick = xTaskGetTickCount();
 
-            /* 上半屏：左声道时域波形（运算前）。离线则清空画直线。 */
+            /* 波形区：左右声道时域波形并排（运算前）。离线则清空画直线。 */
             if (s_view_l.offline) {
                 memset(s_view_l.scroll, 0, sizeof(s_view_l.scroll));
                 s_view_l.peak = 600;
             } else {
                 scroll_push(s_view_l.scroll, s_l, n);
             }
+            if (s_view_r.offline) {
+                memset(s_view_r.scroll, 0, sizeof(s_view_r.scroll));
+                s_view_r.peak = 600;
+            } else {
+                scroll_push(s_view_r.scroll, s_r, n);
+            }
             draw_wave(&s_view_l);
+            draw_wave(&s_view_r);
 
             /* 下半屏：FFT 幅度谱（运算后），展示时域波纹如何变成频域主峰 */
             draw_spectrum(s_fft_mag_l);
 
-            /* 文字信息(方向条 + 两标签)单独节流，避免频繁重画闪烁 */
+            /* 文字信息(方向指示 + 各标签)单独节流，避免频繁重画闪烁 */
             if (now_tick - last_hud_tick >= hud_period) {
                 last_hud_tick = now_tick;
                 draw_hud(have_t, t_angle, t_rho, have_f, s_fft_angle_ema,
                          s_fft_quality, s_fft_peak_hz);
                 draw_label(&s_view_l);
+                draw_label(&s_view_r);
                 draw_spec_label();
             }
         }

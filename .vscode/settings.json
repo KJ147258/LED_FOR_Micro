@@ -15,6 +15,6 @@
     "--query-driver=**",
     "--compile-commands-dir=c:\\Users\\31230\\Desktop\\ai\\The_Project\\build"
   ],
-  "idf.portWin": "COM15",
-  "idf.flashType": "UART"
+  "idf.flashType": "UART",
+  "idf.port": "COM15"
 }
